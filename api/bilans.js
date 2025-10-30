@@ -1,13 +1,12 @@
 export default async function handler(req, res) {
   try {
     const id = req.query.id;
-    if (!id) return res.status(400).json({ error: "Missing ?id" });
+    if (!id) return res.status(400).json({ error: "Missing id" });
 
     const token = process.env.SOC_API_KEY;
     if (!token) return res.status(500).json({ error: "SOC_API_KEY missing" });
 
-    // Appel direct vers l'endpoint "infos légales / bilans"
-    const url = `https://api.societe.com/api/v1/entreprise/${encodeURIComponent(id)}/bilans`;
+    const url = `https://api.societe.com/api/v1/entreprise/${id}/bilans`;
 
     const r = await fetch(url, {
       headers: {
@@ -17,47 +16,36 @@ export default async function handler(req, res) {
     });
 
     const text = await r.text();
-    let payload;
-    try { payload = JSON.parse(text); } catch { payload = null; }
+    let data; try { data = JSON.parse(text) } catch { data = null }
 
-    if (!r.ok) return res.status(r.status).json({ error: payload || text });
+    if (!r.ok) return res.status(r.status).json({ error: data || text });
 
-    // --- Extraction simple du dernier chiffre d'affaires ---
-    const bilans = payload?.bilans || payload?.data || payload?.liste || [];
-    let latestCA = null;
+    const bilans = data?.bilans || data?.data || [];
+
+    let last = null;
 
     for (const b of bilans) {
-      const year =
-        b?.annee ??
-        b?.exercice ??
-        (b?.datecloture ? String(b.datecloture).slice(0, 4) : null);
-      const ca =
-        b?.ca ??
-        b?.chiffreaffaires ??
-        b?.chiffre_affaires ??
-        b?.chiffredaffaires ??
-        b?.caht ??
-        null;
+      const year = b?.annee || b?.exercice || null;
+      const ca = b?.ca || b?.chiffreaffaires || null;
 
       if (year && ca) {
-        if (!latestCA || Number(year) > latestCA.year)
-          latestCA = { year: Number(year), ca: Number(ca) };
+        if (!last || Number(year) > last.year) {
+          last = { year: Number(year), ca: Number(ca) };
+        }
       }
     }
 
-    if (!latestCA)
-      return res.status(404).json({ error: "Aucun chiffre d'affaires trouvé" });
+    if (!last)
+      return res.status(404).json({ error: "CA non trouvé" });
 
-    // Conversion en K€
-    const caK = Math.round(latestCA.ca / 1000);
+    const caK = Math.round(last.ca / 1000);
 
-    // --- Réponse ultra simple ---
-    return res.status(200).json({
-      formatted: `CA (${latestCA.year}) = ${caK} K€`,
-      year: latestCA.year,
+    res.json({
+      formatted: `CA (${last.year}) = ${caK} K€`,
+      year: last.year,
       ca: caK
     });
-  } catch (err) {
-    return res.status(500).json({ error: err?.message || "Unknown server error" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 }
