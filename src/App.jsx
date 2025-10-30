@@ -1,5 +1,7 @@
 import React, { useMemo, useRef, useState } from "react";
 
+const [caLatest, setCaLatest] = useState("—");
+
 const API_BASE = import.meta.env?.VITE_PROXY_BASE || "/api/societe";
 
 const classNames = (...arr) => arr.filter(Boolean).join(" ");
