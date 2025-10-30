@@ -1,7 +1,5 @@
 import React, { useMemo, useRef, useState } from "react";
 
-const [caLatest, setCaLatest] = useState("—");
-
 const API_BASE = import.meta.env?.VITE_PROXY_BASE || "/api/societe";
 
 const classNames = (...arr) => arr.filter(Boolean).join(" ");
@@ -51,44 +49,38 @@ export default function SocieteApp() {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [history, setHistory] = useState([]);
-  
-  // ✅ AJOUT POUR LE CA
-  const [caLatest, setCaLatest] = useState("—");
-
+  const [caLatest, setCaLatest] = useState("—");  // ✅ AJOUT ICI
   const inputRef = useRef(null);
-  const id = useMemo(() => detectIdType(query), [query]);
 
-  const fetchCA = async (idStr) => {
-    try {
-      const resp = await fetch(`/api/bilans?id=${encodeURIComponent(idStr)}`);
-      const json = await resp.json();
-      if (resp.ok) {
-        setCaLatest(json.formatted); // ✅ CA (ANNEE) = XXX K€
-      } else {
-        setCaLatest("—");
-      }
-    } catch {
-      setCaLatest("—");
-    }
-  };
+  const id = useMemo(() => detectIdType(query), [query]);
 
   const fetchData = async (idStr) => {
     setLoading(true);
     setError(null);
     setData(null);
-    setCaLatest("—"); // reset CA
-    
+    setCaLatest("—");
+
     try {
+      // ✅ 1) INFOS LÉGALES
       const url = `${API_BASE}?id=${encodeURIComponent(idStr)}`;
       const resp = await fetch(url);
       const payload = await resp.json();
-      
       if (!resp.ok) throw new Error(payload?.error || `Erreur API (${resp.status})`);
 
       setData(payload);
-      fetchCA(idStr); // ✅ AJOUT : récupère le CA
-      
       setHistory((h) => [idStr, ...h.filter((x) => x !== idStr)].slice(0, 8));
+
+      // ✅ 2) CHIFFRE D’AFFAIRES
+      try {
+        const r = await fetch(`/api/ca?id=${encodeURIComponent(idStr)}`);
+        const j = await r.json();
+        if (r.ok && j?.formatted) {
+          setCaLatest(j.formatted); // ✅ CA (ANNEE) = XXX K€
+        }
+      } catch {
+        setCaLatest("—");
+      }
+
     } catch (e) {
       setError(e.message || "Erreur inconnue");
     } finally {
@@ -106,18 +98,6 @@ export default function SocieteApp() {
     try { await navigator.clipboard.writeText(text); alert("Copié dans le presse-papiers"); } catch {}
   };
 
-  const downloadJSON = () => {
-    if (!data) return;
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    const e = data?.entreprise || data?.company || data || {};
-    a.href = url; 
-    a.download = `societe_${(e?.siren || id.clean || "result")}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   const e = data?.entreprise || data?.company || data || {};
   const denomination = e.denomination || e.raison_sociale || e.nom_entreprise || e.name;
   const siren = e.siren || e.SIREN || e.id || null;
@@ -125,33 +105,12 @@ export default function SocieteApp() {
   const tva = e.tva || e.vat || e.numero_tva || null;
   const naf = e.naf || e.code_naf || e.ape || null;
   const legalForm = e.forme_juridique || e.legal_form || null;
-  const address = e.adresse || e?.siege?.adresse || e.address ||
-    [e.numero_voie, e.type_voie, e.nom_voie, e.code_postal, e.ville].filter(Boolean).join(" ") || null;
+  const address = e.adresse || e?.siege?.adresse || e.address || null;
   const effectif = e.effectif || e.headcount || e.tranche_effectif || null;
   const maj = e.date_maj || e.updated_at || e.derniere_mise_a_jour || null;
 
-// --- Extraction du dernier chiffre d'affaires ---
-const bilan = data?.bilans || data?.financials || data?.finances || null;
-
-let lastCA = null;
-if (Array.isArray(bilan)) {
-  // Certains renvoient { annee: "2023", ca: "4280000" }
-  const sorted = [...bilan].sort((a, b) => (b.annee || 0) - (a.annee || 0));
-  const entry = sorted.find(x => x.ca);
-
-  if (entry) {
-    const montant = Math.round(Number(entry.ca) / 1000); // convertit en k€
-    lastCA = `CA ${entry.annee} = ${montant} k€`;
-  }
-}
-
-// fallback si rien trouvé
-if (!lastCA) lastCA = "—";
-
-  
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white">
-      
       <header className="sticky top-0 z-10 backdrop-blur bg-white/70 border-b border-gray-200">
         <div className="max-w-6xl mx-auto px-4 py-4 flex items-center gap-3">
           <div className="h-9 w-9 rounded-xl bg-black text-white grid place-items-center font-bold">S</div>
@@ -159,82 +118,98 @@ if (!lastCA) lastCA = "—";
             <h1 className="text-lg font-semibold text-gray-800">Societe.com – Console Frontend</h1>
             <p className="text-xs text-gray-500">Recherche par SIREN, SIRET ou TVA · via proxy sécurisé</p>
           </div>
+          <div className="ml-auto hidden sm:block">
+            <Badge>API Base: {API_BASE}</Badge>
+          </div>
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-4 py-6">
-
         <Card>
           <form onSubmit={onSubmit} className="flex flex-col md:flex-row items-stretch gap-3">
             <div className="flex-1">
-              <label className="text-xs text-gray-600">Identifiant</label>
+              <label className="text-xs text-gray-600">Identifiant (SIREN 9 · SIRET 14 · TVA FR…)</label>
               <input
                 ref={inputRef}
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="Ex: 428723266"
+                placeholder="Ex: 428723266 ou FR56428723266"
                 className={classNames(
-                  "mt-1 w-full rounded-xl border px-4 py-2.5",
-                  id.ok ? "border-gray-300" : "border-red-300"
+                  "mt-1 w-full rounded-xl border px-4 py-2.5 focus:outline-none focus:ring-4 transition",
+                  id.ok ? "border-gray-300 focus:ring-gray-200" : "border-red-300 focus:ring-red-100"
                 )}
               />
               <div className="mt-1 h-5 text-xs text-gray-500">
-                {id.ok ? <span>Type détecté : <strong>{id.type}</strong></span>
-                : <span className="text-red-600">{id.hint}</span>}
+                {id.ok ? <span>Type détecté : <strong>{id.type}</strong></span> : (
+                  <span className="text-red-600">{id.hint || "Identifiant invalide"}</span>
+                )}
               </div>
             </div>
 
-            <button type="submit" disabled={!id.ok || loading}
-              className={classNames("rounded-xl px-5 py-2.5",
-              (!id.ok || loading) ? "bg-gray-200" : "bg-black text-white")}>
-              {loading ? "Recherche…" : "Rechercher"}
-            </button>
+            <div className="flex items-end gap-2">
+              <button
+                type="submit"
+                disabled={!id.ok || loading}
+                className={classNames(
+                  "rounded-xl px-5 py-2.5 font-medium shadow-sm border transition",
+                  (!id.ok || loading) ? "bg-gray-200 text-gray-500 border-gray-200" : "bg-black text-white border-black hover:opacity-90"
+                )}
+              >
+                {loading ? "Recherche…" : "Rechercher"}
+              </button>
 
-            <button type="button" onClick={() => { setQuery(""); setData(null); setError(null); }}
-              className="rounded-xl px-4 py-2.5 border border-gray-300">
-              Effacer
-            </button>
+              <button
+                type="button"
+                onClick={() => { setQuery(""); setData(null); setError(null); setCaLatest("—"); inputRef.current?.focus(); }}
+                className="rounded-xl px-4 py-2.5 font-medium border border-gray-300 text-gray-700 hover:bg-gray-50"
+              >
+                Effacer
+              </button>
+            </div>
           </form>
         </Card>
 
+        {error && (
+          <div className="mt-4">
+            <Card className="border-red-200">
+              <div className="text-sm text-red-700">{error}</div>
+            </Card>
+          </div>
+        )}
+
         {data && (
-          <div className="mt-6">
+          <div className="mt-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="lg:col-span-2 space-y-4">
+              <Card title="Synthèse">
+                <div className="grid md:grid-cols-2 gap-3">
+                  <Field label="Dénomination" value={denomination} />
+                  <Field label="Forme juridique" value={legalForm} />
+                  <Field label="SIREN" value={siren} />
+                  <Field label="SIRET" value={siret} />
+                  <Field label="TVA" value={tva} />
+                  <Field label="Code NAF/APE" value={naf} />
+                  <Field label="Adresse" value={address} />
+                  <Field label="Effectif" value={effectif} />
+                  <Field label="Chiffre d'affaires" value={caLatest} />  {/* ✅ CA ICI */}
+                  <Field label="Dernière mise à jour" value={maj} />
+                </div>
+              </Card>
 
-            <Card title="Synthèse">
-              <div className="grid md:grid-cols-2 gap-3">
-
-                <Field label="Dénomination" value={denomination} />
-                <Field label="Forme juridique" value={legalForm} />
-
-                <Field label="SIREN" value={siren} />
-                <Field label="SIRET" value={siret} />
-
-                <Field label="TVA" value={tva} />
-                <Field label="Code NAF/APE" value={naf} />
-
-                <Field label="Adresse" value={address} />
-                <Field label="Effectif" value={effectif} />
-
-                {/* ✅ ✅ ✅ AFFICHAGE DU CA FORMATÉ */}
-                <Field label="Chiffre d'affaires" value={caLatest} />
-
-                <Field label="Dernière mise à jour" value={maj} />
-              </div>
-            </Card>
-
-            <Card title="Réponse brute (JSON)">
-              <pre className="text-xs bg-gray-50 border p-3">
-                {JSON.stringify(data, null, 2)}
-              </pre>
-            </Card>
-
+              <Card
+                title={
+                  <div className="flex items-center justify-between">
+                    <span>Réponse brute (JSON)</span>
+                  </div>
+                }
+              >
+                <pre className="text-xs bg-gray-50 border border-gray-200 rounded-xl p-3 overflow-auto max-h-[480px] whitespace-pre-wrap break-words">
+                  {JSON.stringify(data, null, 2)}
+                </pre>
+              </Card>
+            </div>
           </div>
         )}
       </main>
-
-      <footer className="max-w-6xl mx-auto px-4 py-10 text-xs text-gray-500">
-        UI prête à déployer · {new Date().getFullYear()}
-      </footer>
     </div>
   );
 }
