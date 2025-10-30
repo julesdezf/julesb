@@ -128,6 +128,25 @@ export default function SocieteApp() {
   const effectif = e.effectif || e.headcount || e.tranche_effectif || null;
   const maj = e.date_maj || e.updated_at || e.derniere_mise_a_jour || null;
 
+// --- Extraction du dernier chiffre d'affaires ---
+const bilan = data?.bilans || data?.financials || data?.finances || null;
+
+let lastCA = null;
+if (Array.isArray(bilan)) {
+  // Certains renvoient { annee: "2023", ca: "4280000" }
+  const sorted = [...bilan].sort((a, b) => (b.annee || 0) - (a.annee || 0));
+  const entry = sorted.find(x => x.ca);
+
+  if (entry) {
+    const montant = Math.round(Number(entry.ca) / 1000); // convertit en k€
+    lastCA = `CA ${entry.annee} = ${montant} k€`;
+  }
+}
+
+// fallback si rien trouvé
+if (!lastCA) lastCA = "—";
+
+  
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-50 to-white">
       
