@@ -1,42 +1,54 @@
 export default async function handler(req, res) {
+  const { id } = req.query;
+
+  if (!id) {
+    return res.status(400).json({ error: "Missing ?id= (SIREN/SIRET/TVA)" });
+  }
+
+  const API_KEY = process.env.SOC_API_KEY;
+  const BASE = "https://api.societe.com/api/v1";
+
+  const headers = { "x-api-key": API_KEY };
+
+  async function call(path) {
+    const r = await fetch(`${BASE}${path}`, { headers });
+    return r.json();
+  }
+
   try {
-    const id = req.query.id;
-    if (!id) {
-      return res.status(400).json({ error: "Missing ?id (SIREN/SIRET/TVA)" });
-    }
+    // 1️⃣ ESSAI : BILANS
+    const bilans = await call(`/entreprise/${id}/bilans`);
 
-    const token = process.env.SOC_API_KEY;
-    if (!token) {
-      return res.status(500).json({ error: "SOC_API_KEY missing in server" });
-    }
-
-    // ✅ CHEMIN EXACT POUR TON OFFRE
-    const url = `https://api.societe.com/api/v1/entreprise/${encodeURIComponent(id)}/infoslegales`;
-
-    const upstream = await fetch(url, {
-      headers: {
-        "X-Authorization": `socapi ${token}`,   // ✅ header correct pour ton offre
-        "Accept": "application/json"
+    if (bilans?.bilans?.length > 0) {
+      const dernier = bilans.bilans[0]; // le plus récent
+      if (dernier?.ca) {
+        return res.status(200).json({
+          siren: id,
+          ca: dernier.ca,
+          annee: dernier.annee,
+        });
       }
-    });
-
-    const text = await upstream.text();
-    let payload;
-    try { payload = JSON.parse(text); }
-    catch { payload = { raw: text }; }
-
-    // ✅ CORS pour ton navigateur
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-
-    if (req.method === "OPTIONS") {
-      return res.status(204).end();
     }
 
-    return res.status(upstream.status).json(payload);
+    // 2️⃣ ESSAI : PROFIL FINANCIER (informations-financieres)
+    const fi = await call(`/entreprise/${id}/informations-financieres`);
 
-  } catch (err) {
-    return res.status(500).json({ error: err.message || "Unknown server error" });
+    if (fi?.informations_financieres?.chiffre_affaires) {
+      const ca = fi.informations_financieres.chiffre_affaires;
+      const annee = fi.informations_financieres.annee;
+
+      return res.status(200).json({
+        siren: id,
+        ca,
+        annee,
+      });
+    }
+
+    // 3️⃣ Aucun CA trouvé
+    return res.status(404).json({
+      error: "CA non trouvé dans les bilans/profil financier",
+    });
+  } catch (e) {
+    return res.status(500).json({ error: e.message });
   }
 }
