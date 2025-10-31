@@ -1,71 +1,76 @@
-// /api/ca.js
+// /api/ca.js — retourne "CA (ANNEE) = xxx K€" à partir de /entreprise/{id}/bilans
+// Requiert la variable d'env SOC_API_TOKEN (ton token nu, sans "socapi " devant)
+
 export default async function handler(req, res) {
   try {
     const id = req.query.id;
-    if (!id) return res.status(400).json({ error: "Missing id" });
+    if (!id) return res.status(400).json({ error: "Missing ?id=" });
 
-    const token = process.env.SOC_API_KEY;
-    if (!token) return res.status(500).json({ error: "SOC_API_KEY missing" });
-
-    // Endpoints possibles selon l’offre
-    const candidates = [
-      `https://api.societe.com/api/v1/entreprise/${id}/bilans`,
-      `https://api.societe.com/api/v1/entreprise/${id}/finances`,
-      `https://api.societe.com/api/v1/entreprise/${id}/profilfinancier`,
-      `https://api.societe.com/api/v1/entreprise/${id}/profil-financier`,
-    ];
-
-    let data = null, status = 404;
-
-    for (const url of candidates) {
-      const r = await fetch(url, {
-        headers: { "X-Authorization": `socapi ${token}`, "Accept": "application/json" },
-      });
-      status = r.status;
-      const txt = await r.text();
-      let json = null; try { json = JSON.parse(txt); } catch {}
-      if (r.ok && json) { data = json; break; }
-      // si 404, on tente le suivant; si 401/403 => stop
-      if ([401,403].includes(r.status)) {
-        return res.status(r.status).json({ error: "Unauthorized for this endpoint" });
-      }
+    const token = process.env.SOC_API_TOKEN;
+    if (!token) {
+      return res.status(500).json({ error: "SOC_API_TOKEN missing in environment" });
     }
 
-    if (!data) return res.status(status).json({ error: "Aucune donnée finances/bilans trouvée" });
-
-    // --- Extraction robuste d'un tableau de lignes avec annee + ca ---
-    const guessTables = [];
-    const pushIfArray = (arr) => { if (Array.isArray(arr)) guessTables.push(arr); };
-
-    pushIfArray(data?.bilans);
-    pushIfArray(data?.finances);
-    pushIfArray(data?.financials);
-    pushIfArray(data?.profil);
-    pushIfArray(data?.donnees);
-    // scan superficiel de valeurs imbriquées
-    Object.values(data).forEach(v => { if (Array.isArray(v)) guessTables.push(v); });
-
-    let best = null;
-    for (const table of guessTables) {
-      for (const row of table) {
-        const year = row?.annee ?? row?.exercice ?? row?.year ?? null;
-        const ca   = row?.ca ?? row?.chiffreaffaires ?? row?.chiffre_affaires ?? row?.turnover ?? null;
-        if (year && ca) {
-          if (!best || Number(year) > best.year) best = { year: Number(year), ca: Number(ca) };
-        }
-      }
-    }
-
-    if (!best) return res.status(404).json({ error: "CA non trouvé dans les bilans/profil financier" });
-
-    const caK = Math.round(best.ca / 1000);
-    return res.json({
-      formatted: `CA (${best.year}) = ${caK} K€`,
-      year: best.year,
-      ca_k: caK
+    // Appel bilans (financier)
+    const url = `https://api.societe.com/api/v1/entreprise/${encodeURIComponent(id)}/bilans`;
+    const upstream = await fetch(url, {
+      headers: {
+        // ⚠️ format exact demandé par l'API :
+        "X-Authorization": `socapi ${token}`,
+        "Accept": "application/json",
+      },
     });
 
-  } catch (e) {
-    return res.status(500).json({ error: e.message || "Server error" });
+    const text = await upstream.text();
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      return res.status(502).json({ error: "Invalid JSON from upstream", raw: text });
+    }
+
+    if (!upstream.ok) {
+      // on remonte l’erreur utile
+      return res.status(upstream.status).json(json || { error: "Upstream error" });
+    }
+
+    // La doc indique que la réponse est structurée ainsi :
+    // { "data": { "dernierca": "...", "dernierbildate": "YYYY", "bilans": [...] } }
+    const data = json?.data || json;
+
+    // 1) Chemin le plus simple : dernierca + dernierbildate
+    const dernierca = data?.dernierca ? Number(data.dernierca) : null;
+    const yearLast = data?.dernierbildate ? String(data.dernierbildate) : null;
+
+    if (dernierca && yearLast) {
+      return res.status(200).json({
+        formatted: `CA (${yearLast}) = ${Math.round(dernierca / 1000)} K€`,
+        year: yearLast,
+        ca: dernierca,
+        source: "data.dernierca",
+      });
+    }
+
+    // 2) Sinon, on retombe sur le dernier élément de 'bilans' avec rescatotal (CA)
+    const bilans = Array.isArray(data?.bilans) ? data.bilans : [];
+    if (bilans.length) {
+      // tri décroissant par année si nécessaire
+      bilans.sort((a, b) => Number(b?.anneebilan || 0) - Number(a?.anneebilan || 0));
+      const b0 = bilans.find(b => b?.rescatotal);
+      if (b0?.rescatotal && b0?.anneebilan) {
+        const caNum = Number(b0.rescatotal);
+        const year = String(b0.anneebilan);
+        return res.status(200).json({
+          formatted: `CA (${year}) = ${Math.round(caNum / 1000)} K€`,
+          year,
+          ca: caNum,
+          source: "bilans[0].rescatotal",
+        });
+      }
+    }
+
+    return res.status(404).json({ error: "CA non trouvé dans les bilans/profil financier" });
+  } catch (err) {
+    return res.status(500).json({ error: err?.message || "Unknown server error" });
   }
 }
