@@ -1,17 +1,44 @@
-import React, { useMemo, useState } from "react";
-import BatchCA from "./BatchCA"; // <= IMPORTANT : même dossier, même casse
+// src/CAApp.jsx
+import React, { useMemo, useState, Suspense } from "react";
+
+// Lazy load BatchCA pour éviter un crash silencieux au rendu
+const BatchCA = React.lazy(() => import("./BatchCA.jsx"));
 
 const API = "/api/ca";
 
 const isDigits = (s) => /^\d+$/.test(s);
-const detectId = (raw = "") => {
-  const s = raw.replace(/\s|-|\u00A0/g, "").toUpperCase();
+const detectId = (raw) => {
+  const s = (raw || "").replace(/\s|-|\u00A0/g, "").toUpperCase();
   if (!s) return { ok: false, clean: "", hint: "Entrez un identifiant" };
   if (s.startsWith("FR")) return { ok: true, clean: s };
   if (isDigits(s) && s.length === 9) return { ok: true, clean: s };
   if (isDigits(s) && s.length === 14) return { ok: true, clean: s };
   return { ok: false, clean: s, hint: "Format inconnu" };
 };
+
+// Petite ErrorBoundary pour afficher l'erreur si BatchCA plante
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    console.error("BatchCA crashed:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="mt-4 p-3 bg-red-100 text-red-700 rounded-xl">
+          Erreur dans le module Excel : {String(this.state.error?.message || this.state.error)}
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export default function CAApp() {
   const [query, setQuery] = useState("");
@@ -26,6 +53,7 @@ export default function CAApp() {
     setLoading(true);
     setError(null);
     setResult(null);
+
     try {
       const resp = await fetch(`${API}?id=${encodeURIComponent(id.clean)}`);
       const data = await resp.json();
@@ -67,9 +95,13 @@ export default function CAApp() {
         </div>
       )}
 
-      {/* ——— BATCH EXCEL TOUJOURS AFFICHÉ ——— */}
+      {/* BATCH TOUJOURS VISIBLE, avec fallback + garde-fou */}
       <div className="mt-10 border-t pt-8">
-        <BatchCA />
+        <Suspense fallback={<div className="text-sm text-gray-600">Chargement du module Excel…</div>}>
+          <ErrorBoundary>
+            <BatchCA />
+          </ErrorBoundary>
+        </Suspense>
       </div>
     </div>
   );
