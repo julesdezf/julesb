@@ -73,6 +73,11 @@ async function mapWithConcurrency(
   return results;
 }
 
+<div className="mt-8 p-3 rounded-xl bg-amber-50 border text-amber-800">
+  Bloc batch ci-dessous — si vous ne voyez pas ceci, le déploiement n'est pas à jour.
+</div>
+
+
 /******************************
  *  Batch intégré dans ce fichier
  ******************************/
