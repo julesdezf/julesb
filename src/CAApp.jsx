@@ -31,7 +31,7 @@ export default function CAApp() {
       const resp = await fetch(`${API}?id=${encodeURIComponent(id.clean)}`);
       const data = await resp.json();
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
-      setResult(data); // attendu: { formatted: "CA (ANNEE) = XX K€", ... }
+      setResult(data); // { formatted: "CA (ANNEE) = XX K€", ... }
     } catch (e) {
       setError(e.message || "Erreur inconnue");
     } finally {
@@ -59,9 +59,7 @@ export default function CAApp() {
       </button>
 
       {error && (
-        <div className="mt-4 p-3 bg-red-100 text-red-700 rounded-xl">
-          {error}
-        </div>
+        <div className="mt-4 p-3 bg-red-100 text-red-700 rounded-xl">{error}</div>
       )}
 
       {result && (
@@ -70,7 +68,7 @@ export default function CAApp() {
         </div>
       )}
 
-      {/* ---- Batch (toujours visible) ---- */}
+      {/* ⬇️ Le batch est maintenant TOUJOURS visible */}
       <div className="mt-10 border-t pt-8">
         <BatchCA />
       </div>
