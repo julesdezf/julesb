@@ -1,11 +1,11 @@
 import React, { useMemo, useState } from "react";
-import BatchCA from "./BatchCA";
+import BatchCA from "./BatchCA"; // <= IMPORTANT : même dossier, même casse
 
 const API = "/api/ca";
 
 const isDigits = (s) => /^\d+$/.test(s);
-const detectId = (raw) => {
-  const s = (raw || "").replace(/\s|-|\u00A0/g, "").toUpperCase();
+const detectId = (raw = "") => {
+  const s = raw.replace(/\s|-|\u00A0/g, "").toUpperCase();
   if (!s) return { ok: false, clean: "", hint: "Entrez un identifiant" };
   if (s.startsWith("FR")) return { ok: true, clean: s };
   if (isDigits(s) && s.length === 9) return { ok: true, clean: s };
@@ -67,7 +67,7 @@ export default function CAApp() {
         </div>
       )}
 
-      {/* Bloc batch : TOUJOURS visible */}
+      {/* ——— BATCH EXCEL TOUJOURS AFFICHÉ ——— */}
       <div className="mt-10 border-t pt-8">
         <BatchCA />
       </div>
