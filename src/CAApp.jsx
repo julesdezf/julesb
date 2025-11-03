@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useState } from "react";
+import BatchCA from "./BatchCA";
 
 const API = "/api/ca";
 
@@ -59,6 +60,10 @@ export default function CAApp() {
       {error && (
         <div className="mt-4 p-3 bg-red-100 text-red-700 rounded-xl">
           {error}
+<div className="mt-10 border-t pt-8">
+  <BatchCA />
+</div>
+        
         </div>
       )}
 
