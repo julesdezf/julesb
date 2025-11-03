@@ -1,5 +1,7 @@
-import React, { useMemo, useState } from "react";
-import BatchCA from "./BatchCA";
+import React, { useMemo, useState, Suspense } from "react";
+
+// ✅ Import lazy pour être sûr que BatchCA charge même si XLSX est lourd
+const BatchCA = React.lazy(() => import("./BatchCA.jsx"));
 
 const API = "/api/ca";
 
@@ -14,6 +16,8 @@ const detectId = (raw) => {
 };
 
 export default function CAApp() {
+  console.log("[CAApp] rendu");
+
   const [query, setQuery] = useState("");
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -31,7 +35,7 @@ export default function CAApp() {
       const resp = await fetch(`${API}?id=${encodeURIComponent(id.clean)}`);
       const data = await resp.json();
       if (!resp.ok) throw new Error(data?.error || `HTTP ${resp.status}`);
-      setResult(data); // { formatted: "CA (ANNEE) = XX K€", ... }
+      setResult(data);
     } catch (e) {
       setError(e.message || "Erreur inconnue");
     } finally {
@@ -59,7 +63,9 @@ export default function CAApp() {
       </button>
 
       {error && (
-        <div className="mt-4 p-3 bg-red-100 text-red-700 rounded-xl">{error}</div>
+        <div className="mt-4 p-3 bg-red-100 text-red-700 rounded-xl">
+          {error}
+        </div>
       )}
 
       {result && (
@@ -68,9 +74,20 @@ export default function CAApp() {
         </div>
       )}
 
-      {/* ⬇️ Le batch est maintenant TOUJOURS visible */}
+      {/* ✅ BATCH TOUJOURS, TOUJOURS, TOUJOURS AFFICHÉ */}
       <div className="mt-10 border-t pt-8">
-        <BatchCA />
+
+        <h2 className="text-lg font-bold mb-3">Batch Excel – Dernier CA</h2>
+
+        <Suspense
+          fallback={
+            <div className="p-3 bg-gray-100 border rounded-xl">
+              Chargement du module Excel…
+            </div>
+          }
+        >
+          <BatchCA />
+        </Suspense>
       </div>
     </div>
   );
