@@ -6,6 +6,17 @@ const API_BASE = "/api/ca";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const onlyDigits = (s = "") => (s || "").toString().replace(/\D+/g, "");
 
+// ──────────────────────────────────────────────────────────────
+// Helpers pour parser le fallback "CA (2024) = 1562 K€"
+function parseFormattedCA(s = "") {
+  const m = /CA\s*\((\d{4})\)\s*=\s*([\d\s]+)\s*K€/i.exec(s);
+  if (!m) return null;
+  const year = m[1];
+  const caK = Math.round(Number(m[2].replace(/\s+/g, "")));
+  return { year, caK };
+}
+
+// Récupère {year, caK} quelle que soit la forme renvoyée par l'API
 async function fetchCAForId(id) {
   const url = `${API_BASE}?id=${encodeURIComponent(id)}`;
   const resp = await fetch(url);
@@ -13,23 +24,39 @@ async function fetchCAForId(id) {
   if (!resp.ok) throw new Error(payload?.error || `HTTP ${resp.status}`);
 
   const d = payload?.data || payload;
-  let year = null;
-  let caK = null;
 
+  // 1) Nouveau format direct
+  if (d?.year && (d?.caK || d?.cak)) {
+    const year = String(d.year);
+    const caK = Math.round(Number(d.caK ?? d.cak));
+    return { year, caK };
+  }
+
+  // 2) Format "dernierca/dernierbildate" (euros -> K€)
   if (d?.dernierca && d?.dernierbildate) {
-    year = String(d.dernierbildate);
-    caK = Math.round(Number(d.dernierca) / 1000);
-  } else if (Array.isArray(d?.bilans) && d.bilans.length) {
+    const year = String(d.dernierbildate);
+    const caK = Math.round(Number(d.dernierca) / 1000);
+    return { year, caK };
+  }
+
+  // 3) Format "bilans" (euros -> K€)
+  if (Array.isArray(d?.bilans) && d.bilans.length) {
     const b = d.bilans[0];
-    year = String(b?.anneebilan || "");
-    caK = Math.round(Number(b?.rescatotal || 0) / 1000);
+    const year = String(b?.anneebilan || "");
+    const caK = Math.round(Number(b?.rescatotal || 0) / 1000);
+    if (year && !Number.isNaN(caK)) return { year, caK };
   }
-  if (!year || caK === null || Number.isNaN(caK)) {
-    throw new Error("CA introuvable");
+
+  // 4) Fallback sur "formatted": "CA (2024) = 1562 K€"
+  if (typeof d?.formatted === "string") {
+    const parsed = parseFormattedCA(d.formatted);
+    if (parsed) return parsed;
   }
-  return { year, caK };
+
+  throw new Error("CA introuvable");
 }
 
+// Limiteur de concurrence simple
 async function mapWithConcurrency(items, worker, { concurrency = 5, delayMs = 0 } = {}) {
   const results = new Array(items.length);
   let i = 0;
@@ -107,9 +134,10 @@ export default function BatchCA() {
           setProgress((p) => ({ ...p, done: p.done + 1 }));
         }
       },
-      { concurrency: 5, delayMs: 150 }
+      { concurrency: 5, delayMs: 150 } // limite les appels pour éviter 429
     );
 
+    // Injection des résultats
     results.forEach((r, i) => {
       if (r?.error) {
         out[i]["Année CA"] = "";
@@ -120,6 +148,7 @@ export default function BatchCA() {
       }
     });
 
+    // Export Excel
     try {
       const wb = XLSX.utils.book_new();
       const ws = XLSX.utils.json_to_sheet(out);
