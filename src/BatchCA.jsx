@@ -7,53 +7,116 @@ const API_BASE = "/api/ca";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const onlyDigits = (s = "") => (s || "").toString().replace(/\D+/g, "");
 
-/** Récupère { year, caK } pour un SIREN/SIRET/TVA en acceptant 3 formats de réponse */
-async function fetchCAForId(id) {
+/** Convertit n'importe quelle valeur d'erreur en texte lisible (jamais "[object Object]") */
+function toMessage(x) {
+  if (x == null) return "";
+  if (typeof x === "string") return x;
+  if (x instanceof Error) return x.message;
+  if (typeof x === "object") {
+    // essaie les champs courants, sinon JSON
+    return x.message || x.error || x.detail || JSON.stringify(x);
+  }
+  return String(x);
+}
+
+/** Garantit qu'une cellule ne contient jamais un objet (Excel afficherait "[object Object]") */
+function toCell(v) {
+  if (v == null) return "";
+  const t = typeof v;
+  if (t === "string" || t === "number" || t === "boolean") return v;
+  return toMessage(v);
+}
+
+/** Récupère { year, caK } pour un SIREN/SIRET/TVA en acceptant 3 formats de réponse.
+ *  Ajoute un retry avec back-off sur les 429 / 503 (rate limit). */
+async function fetchCAForId(id, { retries = 4 } = {}) {
   const url = `${API_BASE}?id=${encodeURIComponent(id)}`;
-  const resp = await fetch(url);
-  const payload = await resp.json();
-  if (!resp.ok) throw new Error(payload?.error || `HTTP ${resp.status}`);
 
-  // On accepte soit {year, caK}, soit {data:{dernierca,...}} ou {data:{bilans:[]}}, soit formatted
-  const d = payload?.data || payload;
+  let attempt = 0;
+  let lastErr = null;
+  while (attempt <= retries) {
+    let resp;
+    try {
+      resp = await fetch(url);
+    } catch (e) {
+      // erreur réseau -> on réessaie
+      lastErr = new Error(toMessage(e) || "Erreur réseau");
+      await sleep(600 * Math.pow(2, attempt)); // 600, 1200, 2400, 4800 ms
+      attempt++;
+      continue;
+    }
 
-  // a) Format "simple" renvoyé par /api/ca : { year, caK }
-  if (d?.year !== undefined && d?.caK !== undefined) {
-    const y = String(d.year);
-    const k = Number(d.caK);
-    if (!Number.isNaN(k)) return { year: y, caK: k };
-  }
+    // Rate limit ou indispo temporaire -> on attend et on réessaie
+    if (resp.status === 429 || resp.status === 503) {
+      const retryAfter = Number(resp.headers.get("retry-after"));
+      const waitMs = Number.isFinite(retryAfter) && retryAfter > 0
+        ? retryAfter * 1000
+        : 800 * Math.pow(2, attempt); // 800, 1600, 3200, 6400 ms
+      lastErr = new Error(`HTTP ${resp.status} (rate limit)`);
+      await sleep(waitMs);
+      attempt++;
+      continue;
+    }
 
-  // b) Format "bilans" : dernierca/dernierbildate (en euros)
-  if (d?.dernierca && d?.dernierbildate) {
-    const y = String(d.dernierbildate);
-    const k = Math.round(Number(d.dernierca) / 1000);
-    if (!Number.isNaN(k)) return { year: y, caK: k };
-  }
+    let payload = null;
+    try {
+      payload = await resp.json();
+    } catch {
+      payload = null;
+    }
 
-  // c) Format "bilans" : data.bilans[0].rescatotal / anneebilan (en euros)
-  if (Array.isArray(d?.bilans) && d.bilans.length) {
-    const b = d.bilans[0];
-    const y = String(b?.anneebilan || "");
-    const k = Math.round(Number(b?.rescatotal || 0) / 1000);
-    if (y && !Number.isNaN(k)) return { year: y, caK: k };
-  }
+    if (!resp.ok) {
+      // IMPORTANT : payload.error peut être un OBJET -> on le convertit en texte
+      const msg = toMessage(payload?.error) || `HTTP ${resp.status}`;
+      const err = new Error(msg);
+      err.status = resp.status;
+      throw err; // erreur "définitive" (400, 404, 401...) -> pas de retry
+    }
 
-  // d) Dernier filet: parser "formatted": "CA (2024) = 1562 K€"
-  if (typeof d?.formatted === "string") {
-    const match = d.formatted.match(/CA\s*\((\d{4})\)\s*=\s*([\d\s]+)K€/i);
-    if (match) {
-      const y = match[1];
-      const k = Number(match[2].replace(/\s+/g, ""));
+    // On accepte soit {year, caK}, soit {data:{dernierca,...}} ou {data:{bilans:[]}}, soit formatted
+    const d = payload?.data || payload;
+
+    // a) Format "simple" renvoyé par /api/ca : { year, caK }
+    if (d?.year !== undefined && d?.caK !== undefined) {
+      const y = String(d.year);
+      const k = Number(d.caK);
       if (!Number.isNaN(k)) return { year: y, caK: k };
     }
+
+    // b) Format "bilans" : dernierca/dernierbildate (en euros)
+    if (d?.dernierca && d?.dernierbildate) {
+      const y = String(d.dernierbildate);
+      const k = Math.round(Number(d.dernierca) / 1000);
+      if (!Number.isNaN(k)) return { year: y, caK: k };
+    }
+
+    // c) Format "bilans" : data.bilans[0].rescatotal / anneebilan (en euros)
+    if (Array.isArray(d?.bilans) && d.bilans.length) {
+      const b = d.bilans[0];
+      const y = String(b?.anneebilan || "");
+      const k = Math.round(Number(b?.rescatotal || 0) / 1000);
+      if (y && !Number.isNaN(k)) return { year: y, caK: k };
+    }
+
+    // d) Dernier filet: parser "formatted": "CA (2024) = 1562 K€"
+    if (typeof d?.formatted === "string") {
+      const match = d.formatted.match(/CA\s*\((\d{4})\)\s*=\s*([\d\s]+)K€/i);
+      if (match) {
+        const y = match[1];
+        const k = Number(match[2].replace(/\s+/g, ""));
+        if (!Number.isNaN(k)) return { year: y, caK: k };
+      }
+    }
+
+    throw new Error("CA introuvable");
   }
 
-  throw new Error("CA introuvable");
+  // toutes les tentatives ont échoué (rate limit persistant / réseau)
+  throw lastErr || new Error("Échec après plusieurs tentatives");
 }
 
 /** Limiteur de concurrence simple pour éviter le 429 */
-async function mapWithConcurrency(items, worker, { concurrency = 5, delayMs = 0 } = {}) {
+async function mapWithConcurrency(items, worker, { concurrency = 3, delayMs = 0 } = {}) {
   const results = new Array(items.length);
   let i = 0;
   async function runner() {
@@ -62,7 +125,7 @@ async function mapWithConcurrency(items, worker, { concurrency = 5, delayMs = 0 
       try {
         results[cur] = await worker(items[cur], cur);
       } catch (e) {
-        results[cur] = { error: e?.message || String(e) };
+        results[cur] = { error: toMessage(e) };
       }
       if (delayMs) await sleep(delayMs);
     }
@@ -107,7 +170,7 @@ export default function BatchCA() {
       setColName(guess);
       setLog(`Feuille "${first}" chargée (${json.length} lignes). Colonne SIREN détectée : "${guess}".`);
     } catch (e2) {
-      setLog(`Erreur de lecture : ${e2?.message || e2}`);
+      setLog(`Erreur de lecture : ${toMessage(e2)}`);
     }
   };
 
@@ -138,17 +201,17 @@ export default function BatchCA() {
           setProgress((p) => ({ ...p, done: p.done + 1 }));
         }
       },
-      { concurrency: 5, delayMs: 150 } // Limiter les appels API
+      { concurrency: 3, delayMs: 300 } // Limiter les appels API (anti-429)
     );
 
-    // Injection des résultats
+    // Injection des résultats (toCell garantit qu'on n'écrit jamais un objet)
     results.forEach((r, i) => {
       if (r?.error) {
         out[i]["Année CA"] = "";
-        out[i]["Dernier CA (K€)"] = r.error;
+        out[i]["Dernier CA (K€)"] = toCell(r.error);
       } else {
-        out[i]["Année CA"] = r.year;
-        out[i]["Dernier CA (K€)"] = r.caK;
+        out[i]["Année CA"] = toCell(r.year);
+        out[i]["Dernier CA (K€)"] = toCell(r.caK);
       }
     });
 
@@ -161,7 +224,7 @@ export default function BatchCA() {
       XLSX.writeFile(wb, `${base}_avec_CA.xlsx`);
       setLog("Fichier exporté ✅");
     } catch (e3) {
-      setLog(`Erreur export : ${e3?.message || e3}`);
+      setLog(`Erreur export : ${toMessage(e3)}`);
     } finally {
       setWorking(false);
     }
@@ -198,7 +261,7 @@ export default function BatchCA() {
       {log && <div className="text-sm text-gray-700">{log}</div>}
 
       <p className="text-xs text-gray-500">
-        La colonne SIREN doit contenir 9 chiffres. Parallélisme limité (5) + petite pause (150 ms) pour éviter le 429.
+        La colonne SIREN doit contenir 9 chiffres. Parallélisme limité (3) + pause (300 ms) + retry auto sur 429 pour éviter le rate limit.
       </p>
     </div>
   );
